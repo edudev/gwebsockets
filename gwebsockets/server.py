@@ -212,10 +212,14 @@ class Server(GObject.GObject):
         self.session_started.emit(session)
         session.start()
 
-    def start(self):
+    def start(self, port=None):
         service = Gio.SocketService()
         service.connect("incoming", self._incoming_connection_cb)
-        return service.add_any_inet_port(None)
+
+        if port is not None and service.add_inet_port(port, None):
+            return port
+        else:
+            return service.add_any_inet_port(None)
 
 
 class Client(GObject.GObject):
