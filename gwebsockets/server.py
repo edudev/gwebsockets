@@ -53,6 +53,7 @@ class Message():
 
 class Session(GObject.GObject):
     message_received = GObject.Signal("message-received", arg_types=(object,))
+    handshake_completed = GObject.Signal("handshake-completed")
 
     def __init__(self, connection):
         GObject.GObject.__init__(self)
@@ -64,19 +65,28 @@ class Session(GObject.GObject):
         self._ready = False
         self._send_queue = deque()
         self._sending = False
+        self._init_headers = {}
 
     def _response_write_cb(self, stream, result, user_data):
         stream.write_bytes_finish(result)
         self._ready = True
+        self.handshake_completed.emit()
 
     def _do_handshake(self):
         self._request.seek(0)
-        response = protocol.make_handshake(self._request)
+        response, headers = protocol.make_handshake_get_headers(self._request)
+        self._init_headers = headers
 
         stream = self._connection.get_output_stream()
         stream.write_bytes_async(GLib.Bytes.new(response.encode("utf-8")),
                                  GLib.PRIORITY_DEFAULT,
                                  None, self._response_write_cb, None)
+
+    def get_headers(self):
+        return self._init_headers
+
+    def is_ready(self):
+        return self._ready
 
     def read_data(self):
         stream = self._connection.get_input_stream()
