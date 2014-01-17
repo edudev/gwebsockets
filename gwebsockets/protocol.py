@@ -227,12 +227,22 @@ def encode_webcoket_key(key):
 
 
 def respond_handshake(request):
+    return make_handshake_get_headers(request)[0]
+
+
+def respond_handshake_get_headers(request):
     request_line = request.readline()
     if not request_line.startswith("GET"):
         raise BadRequestException("The method should be GET")
 
     message = httplib.HTTPMessage(request)
     headers = dict(message)
+
+    # TODO: find a better way to do this
+    # maybe use regex?
+    url = request_line.split()[1]
+    # not the best way to do it...
+    headers['http_path'] = url
 
     if 'websocket' != headers.get('upgrade', '').lower().strip():
         raise BadRequestException('No WebSocket UPGRADE hdr: {}'.format(
