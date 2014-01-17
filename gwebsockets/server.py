@@ -53,6 +53,7 @@ class Message():
 
 class Session(GObject.GObject):
     message_received = GObject.Signal("message-received", arg_types=(object,))
+    handshake_completed = GObject.Signal("handshake-completed")
 
     def __init__(self, connection):
         GObject.GObject.__init__(self)
@@ -64,6 +65,7 @@ class Session(GObject.GObject):
         self._ready = False
         self._send_queue = deque()
         self._sending = False
+        self._init_headers = {}
 
     def finish_handshake(self):
         raise NotImplementedError("Subclasses should implement this!")
@@ -71,6 +73,13 @@ class Session(GObject.GObject):
     def ready(self):
         self._ready = True
         self._send_from_queue()
+        self.handshake_completed.emit()
+
+    def get_headers(self):
+        return self._init_headers
+
+    def is_ready(self):
+        return self._ready
 
     def read_data(self):
         # why aren't the streams properties,
