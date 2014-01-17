@@ -215,12 +215,22 @@ def make_message(message, binary=False):
 
 
 def make_handshake(request):
+    return make_handshake_get_headers(request)[0]
+
+
+def make_handshake_get_headers(request):
     request_line = request.readline()
     if not request_line.startswith("GET"):
         raise BadRequestException("The method should be GET")
 
     message = httplib.HTTPMessage(request)
     headers = dict(message)
+
+    # TODO: find a better way to do this
+    # maybe use regex?
+    url = request_line.split()[1]
+    # not the best way to do it...
+    headers['http_path'] = url
 
     if 'websocket' != headers.get('upgrade', '').lower().strip():
         raise BadRequestException('No WebSocket UPGRADE hdr: {}'.format(
@@ -249,9 +259,11 @@ def make_handshake(request):
 
     accept_key = hashlib.sha1(key.encode() + WS_KEY).digest()
 
-    return "HTTP/1.1 101 Switching Protocols\r\n" \
-           "UPGRADE: websocket\r\n" \
-           "CONNECTION: upgrade\r\n" \
-           "TRANSFER-ENCODING: chunked\r\n" \
-           "SEC-WEBSOCKET-ACCEPT: %s\r\n\r\n" % \
-           base64.b64encode(accept_key).decode()
+    result = "HTTP/1.1 101 Switching Protocols\r\n" \
+             "UPGRADE: websocket\r\n" \
+             "CONNECTION: upgrade\r\n" \
+             "TRANSFER-ENCODING: chunked\r\n" \
+             "SEC-WEBSOCKET-ACCEPT: %s\r\n\r\n" % \
+             base64.b64encode(accept_key).decode()
+
+    return (result, headers)
