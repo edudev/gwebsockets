@@ -22,6 +22,8 @@ import collections
 import hashlib
 import httplib
 import struct
+from urlparse import urlsplit
+from os import urandom
 
 OPCODE_CONTINUATION = 0x0
 MSG_TEXT = OPCODE_TEXT = 0x1
@@ -38,6 +40,11 @@ Message = collections.namedtuple('Message', ['tp', 'data', 'extra'])
 
 
 class BadRequestException(httplib.HTTPException):
+    code = 400
+
+
+class BadResponseException(httplib.HTTPException):
+    # not sure what this is for
     code = 400
 
 
@@ -214,7 +221,12 @@ def make_message(message, binary=False):
         return _make_frame(message, OPCODE_TEXT)
 
 
-def make_handshake(request):
+def encode_webcoket_key(key):
+    accept_key = hashlib.sha1(key.encode() + WS_KEY).digest()
+    return base64.b64encode(accept_key).decode()
+
+
+def respond_handshake(request):
     request_line = request.readline()
     if not request_line.startswith("GET"):
         raise BadRequestException("The method should be GET")
@@ -247,11 +259,68 @@ def make_handshake(request):
         raise BadRequestException(
             'Handshake error: {!r}'.format(key))
 
-    accept_key = hashlib.sha1(key.encode() + WS_KEY).digest()
-
     return "HTTP/1.1 101 Switching Protocols\r\n" \
            "UPGRADE: websocket\r\n" \
            "CONNECTION: upgrade\r\n" \
            "TRANSFER-ENCODING: chunked\r\n" \
            "SEC-WEBSOCKET-ACCEPT: %s\r\n\r\n" % \
-           base64.b64encode(accept_key).decode()
+           encode_webcoket_key(key)
+
+
+def init_handshake(uri):
+    # "ws:" "//" host [ ":" port ] path [ "?" query ]
+    # "wss:" "//" host [ ":" port ] path [ "?" query ]
+
+    # maybe use regex
+    parsed = urlsplit(uri)
+    if parsed.scheme != 'ws' and parsed.scheme != 'wss':
+        raise ValueError("Bad URI schema")
+
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Bad hostname")
+
+    path = parsed.path
+    if not path:
+        path = '/'
+
+    key = urandom(16)
+    key_encoded = base64.b64encode(key).encode()
+    accept_key = encode_webcoket_key(key_encoded)
+
+    return (accept_key,
+            "GET %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Key: %s\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n" %
+            (path, host, key_encoded))
+
+
+def interpret_handshake(request, accept_key):
+    request_line = request.readline()
+    if not request_line.startswith("HTTP/1.1 101"):
+        # actually, the response can be anything (e.g. 3xx, moved)
+        # TODO: implement the full HTTP protocol handling (really?)
+        raise BadResponseException("The response must be 101")
+
+    message = httplib.HTTPMessage(request)
+    headers = dict(message)
+
+    if 'websocket' != headers.get('upgrade', '').lower().strip():
+        raise BadResponseException('No WebSocket UPGRADE hdr: {}'.format(
+            headers.get('upgrade')))
+
+    if 'upgrade' not in headers.get('connection', '').lower():
+        raise BadRequestException(
+            'No CONNECTION upgrade hdr: {}'.format(
+                headers.get('CONNECTION')))
+
+    key = headers.get('sec-websocket-accept', '@')
+    # @ is an invalid character for base64
+    if key != accept_key:
+        raise BadRequestException(
+            'Handshake error: {!r}'.format(key))
+
+    # check the Sec-WebSocket-Protocol and Sec-WebSocket-Extensions headers?

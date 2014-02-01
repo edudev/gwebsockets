@@ -57,29 +57,25 @@ class Session(GObject.GObject):
     def __init__(self, connection):
         GObject.GObject.__init__(self)
 
-        self._connection = connection
-        self._request = StringIO()
+        self.connection = connection
+        self.handshake = StringIO()
         self._message = MessageBuffer()
         self._parse_g = None
         self._ready = False
         self._send_queue = deque()
         self._sending = False
 
-    def _response_write_cb(self, stream, result, user_data):
-        stream.write_bytes_finish(result)
+    def finish_handshake(self):
+        raise NotImplementedError("Subclasses should implement this!")
+
+    def ready(self):
         self._ready = True
-
-    def _do_handshake(self):
-        self._request.seek(0)
-        response = protocol.make_handshake(self._request)
-
-        stream = self._connection.get_output_stream()
-        stream.write_bytes_async(GLib.Bytes.new(response.encode("utf-8")),
-                                 GLib.PRIORITY_DEFAULT,
-                                 None, self._response_write_cb, None)
+        self._send_from_queue()
 
     def read_data(self):
-        stream = self._connection.get_input_stream()
+        # why aren't the streams properties,
+        # but instead they are fetched each time?
+        stream = self.connection.get_input_stream()
         stream.read_bytes_async(8192, GLib.PRIORITY_DEFAULT, None,
                                 self._read_data_cb, None)
 
@@ -117,9 +113,9 @@ class Session(GObject.GObject):
                 else:
                     break
         else:
-            self._request.write(data)
+            self.handshake.write(data)
             if data.endswith("\r\n\r\n"):
-                self._do_handshake()
+                self.finish_handshake()
 
         self.read_data()
 
@@ -143,13 +139,16 @@ class Session(GObject.GObject):
         self._send_from_queue()
 
     def _send_from_queue(self):
+        if not self._ready:
+            return
+
         if self._sending:
             return
 
         if not self._send_queue:
             return
 
-        stream = self._connection.get_output_stream()
+        stream = self.connection.get_output_stream()
         message, callback = self._send_queue.popleft()
         stream.write_bytes_async(GLib.Bytes.new(message),
                                  GLib.PRIORITY_DEFAULT,
@@ -158,19 +157,88 @@ class Session(GObject.GObject):
         self._sending = True
 
 
+# TODO: separate this in multiple files
+# maybe use 1 session and implement the rest in the Client and Server classes
+class ServerSession(Session):
+    def __init__(self, connection):
+        Session.__init__(self, connection)
+
+    def _response_write_cb(self, stream, result, user_data):
+        stream.write_bytes_finish(result)
+        self.ready()
+
+    def finish_handshake(self):
+        self.handshake.seek(0)
+        response = protocol.respond_handshake(self.handshake)
+
+        stream = self.connection.get_output_stream()
+        stream.write_bytes_async(GLib.Bytes.new(response.encode("utf-8")),
+                                 GLib.PRIORITY_DEFAULT,
+                                 None, self._response_write_cb, None)
+
+    def start(self):
+        self.read_data()
+
+
+class ClientSession(Session):
+    def __init__(self, connection):
+        Session.__init__(self, connection)
+
+        self._accept_key = None
+
+    def _request_write_cb(self, stream, result, user_data):
+        stream.write_bytes_finish(result)
+        self.read_data()
+
+    def finish_handshake(self):
+        self.handshake.seek(0)
+        protocol.interpret_handshake(self.handshake, self._accept_key)
+        self.ready()
+
+    def start(self, uri):
+        self._accept_key, request = protocol.init_handshake(uri)
+
+        stream = self.connection.get_output_stream()
+        stream.write_bytes_async(GLib.Bytes.new(request.encode("utf-8")),
+                                 GLib.PRIORITY_DEFAULT,
+                                 None, self._request_write_cb, None)
+
+
 class Server(GObject.GObject):
     session_started = GObject.Signal("session-started", arg_types=(object,))
 
     def _incoming_connection_cb(self, service, connection, user_data):
-        session = Session(connection)
+        session = ServerSession(connection)
         self.session_started.emit(session)
-        session.read_data()
+        session.start()
 
     def start(self):
         service = Gio.SocketService()
         service.connect("incoming", self._incoming_connection_cb)
         return service.add_any_inet_port(None)
 
+
+class Client(GObject.GObject):
+    session_started = GObject.Signal("session-started", arg_types=(object,))
+
+    # surprisingly this client can be used to start more than 1 connection
+
+    def _connected_cb(self, client, result, uri):
+        connection = client.connect_to_uri_finish(result)
+
+        session = ClientSession(connection)
+        self.session_started.emit(session)
+        session.start(uri)
+
+    def start(self, uri):
+        # maybe parse the uri, make sure it's valid
+        # it will be needed further on
+
+        default_port = 443 if uri.startswith('wss') else 80
+
+        client = Gio.SocketClient()
+        client.connect_to_uri_async(uri, default_port, None,
+                                    self._connected_cb, uri)
 
 if __name__ == "__main__":
     def message_received_cb(session, message):
