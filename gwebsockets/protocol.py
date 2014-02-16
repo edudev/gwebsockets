@@ -227,7 +227,7 @@ def encode_webcoket_key(key):
 
 
 def respond_handshake(request):
-    return make_handshake_get_headers(request)[0]
+    return respond_handshake_get_headers(request)[0]
 
 
 def respond_handshake_get_headers(request):
@@ -269,12 +269,13 @@ def respond_handshake_get_headers(request):
         raise BadRequestException(
             'Handshake error: {!r}'.format(key))
 
-    return "HTTP/1.1 101 Switching Protocols\r\n" \
-           "UPGRADE: websocket\r\n" \
-           "CONNECTION: upgrade\r\n" \
-           "TRANSFER-ENCODING: chunked\r\n" \
-           "SEC-WEBSOCKET-ACCEPT: %s\r\n\r\n" % \
-           encode_webcoket_key(key)
+    return ("HTTP/1.1 101 Switching Protocols\r\n"
+            "UPGRADE: websocket\r\n"
+            "CONNECTION: upgrade\r\n"
+            "TRANSFER-ENCODING: chunked\r\n"
+            "SEC-WEBSOCKET-ACCEPT: %s\r\n\r\n" %
+            encode_webcoket_key(key),
+            headers)
 
 
 def init_handshake(uri):

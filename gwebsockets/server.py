@@ -65,7 +65,7 @@ class Session(GObject.GObject):
         self._ready = False
         self._send_queue = deque()
         self._sending = False
-        self._init_headers = {}
+        self.init_headers = {}
 
     def finish_handshake(self):
         raise NotImplementedError("Subclasses should implement this!")
@@ -76,7 +76,7 @@ class Session(GObject.GObject):
         self.handshake_completed.emit()
 
     def get_headers(self):
-        return self._init_headers
+        return self.init_headers
 
     def is_ready(self):
         return self._ready
@@ -88,6 +88,31 @@ class Session(GObject.GObject):
         stream.read_bytes_async(8192, GLib.PRIORITY_DEFAULT, None,
                                 self._read_data_cb, None)
 
+    def _parse_messages(self):
+        while self._message.available > 0:
+            if self._parse_g is None:
+                self._parse_g = protocol.parse_message(self._message)
+
+            parsed_message = self._parse_g.next()
+            if parsed_message:
+                self._parse_g = None
+
+                received = None
+                if parsed_message.tp == protocol.OPCODE_TEXT:
+                    received = Message(Message.TYPE_TEXT,
+                                       parsed_message.data)
+                    logger.debug("Received text message %s" %
+                                 received.data)
+                elif parsed_message.tp == protocol.OPCODE_BINARY:
+                    received = Message(Message.TYPE_BINARY,
+                                       parsed_message.data)
+                    logger.debug("Received binary message, length %s" %
+                                 len(received.data))
+                if received:
+                    self.message_received.emit(received)
+            else:
+                break
+
     def _read_data_cb(self, stream, result, user_data):
         data = stream.read_bytes_finish(result).get_data()
         logger.debug("Got data, length %d" % len(data))
@@ -97,34 +122,25 @@ class Session(GObject.GObject):
 
         if self._ready:
             self._message.append(data)
-
-            while self._message.available > 0:
-                if self._parse_g is None:
-                    self._parse_g = protocol.parse_message(self._message)
-
-                parsed_message = self._parse_g.next()
-                if parsed_message:
-                    self._parse_g = None
-
-                    received = None
-                    if parsed_message.tp == protocol.OPCODE_TEXT:
-                        received = Message(Message.TYPE_TEXT,
-                                           parsed_message.data)
-                        logger.debug("Received text message %s" %
-                                     received.data)
-                    elif parsed_message.tp == protocol.OPCODE_BINARY:
-                        received = Message(Message.TYPE_BINARY,
-                                           parsed_message.data)
-                        logger.debug("Received binary message, length %s" %
-                                     len(received.data))
-                    if received:
-                        self.message_received.emit(received)
-                else:
-                    break
+            self._parse_messages()
         else:
-            self.handshake.write(data)
-            if data.endswith("\r\n\r\n"):
+            # sadly, this appears to be a bad way of checking if the handshake
+            # has completed; a server can complete the handshake
+            # and immediately send more data; and when it's processed here,
+            # it will actually not end with \r\n\r\n
+            # self.handshake.write(data)
+            # if data.endswith("\r\n\r\n"):
+            #    self.finish_handshake()
+
+            # there is probably a better, more performance wise way to do this
+            split = data.partition('\r\n\r\n')
+            self.handshake.write(split[0])
+            if split[1]:
+                self.handshake.write(split[1])
                 self.finish_handshake()
+
+                self._message.append(split[2])
+                self._parse_messages()
 
         self.read_data()
 
@@ -178,7 +194,8 @@ class ServerSession(Session):
 
     def finish_handshake(self):
         self.handshake.seek(0)
-        response = protocol.respond_handshake(self.handshake)
+        response, self.init_headers = \
+            protocol.respond_handshake_get_headers(self.handshake)
 
         stream = self.connection.get_output_stream()
         stream.write_bytes_async(GLib.Bytes.new(response.encode("utf-8")),
